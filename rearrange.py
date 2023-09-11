@@ -3,7 +3,6 @@ from scipy import ndimage
 import time
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment as lsa
-from collections import deque
 
 #We use an (N,N) grid, where an inner (n,n) grid is the target
 #so number of target sites is n^2
@@ -215,7 +214,7 @@ def create_moves(atoms, fill, bounds, exact = False):
             path.append(move)
             #If we encounter another atom, push that one first
             if inside[pos] == 1:
-                push_to_bottom(pos)
+                moves.append(push_to_bottom(pos))
         if move is not None:
             prev = (pos[0] - move[0], pos[1] - move[1])
             #Remove the site we just filled from tree
@@ -226,6 +225,7 @@ def create_moves(atoms, fill, bounds, exact = False):
         inside[path[0]] = 0
         path[0] = (path[0][0] + y1, path[0][1] + x1)
         atoms[path[0]] = 0
+        atoms[(pos[0] + y1, pos[1] + x1)] = 1
         if not exact:
             perimeter[(root[0] + y1, root[1] + x1)] -= 1
         
@@ -260,7 +260,7 @@ def create_moves(atoms, fill, bounds, exact = False):
         out[y1:y2,x1:x2] = 2
         
         for i in perimeter:
-            on_perimeter = True
+            on_perimeter = False
             ind = 0
             q2 = [i]
             visited = {i:[]}
@@ -275,8 +275,8 @@ def create_moves(atoms, fill, bounds, exact = False):
                 if out[site] == 1:
                     #If we've found a 1, move it to the root node
                     atoms[site] = 0
+                    out[site] = 0
                     atoms[i] = 1
-                    
                     path = [site] + visited[site][::-1] + push_to_bottom((i[0] - y1,i[1]-x1))[1:]
                     moves.append(path)
 
@@ -285,38 +285,81 @@ def create_moves(atoms, fill, bounds, exact = False):
                 
                 #The four neighbouring sites
                 indices = [(site[0] + a[0], site[1] + a[1]) for a in offsets]
+                
                 #Make sure we stay in bounds
-                if on_perimeter:
-                    valid = [(ni, nj) for ni, nj in indices if 0 <= ni < out.shape[0] and 0 <= nj < out.shape[1]]
-                else:
-                    valid = indices
+                valid = [(ni, nj) for ni, nj in indices if 0 <= ni < out.shape[0] and 0 <= nj < out.shape[1]]
                 
                 for adj in valid:
                     if adj not in visited:
-                        move = (site[0] - adj[0], site[1] - adj[0])
+                        move = (site[0] - adj[0], site[1] - adj[1])
                         visited[adj] = visited[site] + [move]
                         q2.append(adj)
                 ind+=1
-                
     return moves
 
 def average(n,reps):
     vals = []
     times = []
+    paths = []
     for test in range(0,reps):
         t = time.time()
         #Create lattice
         np.random.seed(test)
         N = int(n*1.5 + 1) #Should have enough atoms
         arr = np.random.randint(0,2,(N,N))
-        bound = (N//4, N//4, N//4 + n, N//4 + n)
+        copy = arr.copy()
+        diff = (N - n)//2
+        bound = (diff, diff, diff + n, diff + n)
 
-        test = rearange(arr,bound)
+        moves = rearange(arr,bound)
         
         #Number of moves needed is equal to the number of 1s in the central n*n square
         #We calculate this by calculating the number of 0s and subtract from n**2
-        #vals.append(1 - np.sum(1 - filled)/n**2)
+
+        frames = []
+        fig = plt.figure()
+        def animate(i):
+            #Each frame, we clear the plot, then make a new one
+            print(i)
+            plt.cla()
+            plt.imshow(copy)
+            nx.draw_networkx(frames[i][1], pos = frames[i][2], with_labels=False, node_size = 15, arrowstyle="->", arrowsize=10)
+            copy[frames[i][0][0]] = 0
+            copy[frames[i][0][1]] = 1
+            return plt
+
+        if reps == 1:
+            # Create an empty graph
+            for move in moves:
+                graph = nx.DiGraph()
+                d = {}
+                pos = move[0]
+                #plt.imshow(copy)
+                prev = pos
+                graph.add_node(pos)
+                d[pos] = pos[::-1]
+                for i in move[1:]:
+                    prev = pos
+                    pos = (pos[0] + i[0], pos[1] + i[1])
+                    graph.add_node(pos)
+                    graph.add_edge(prev,pos)
+                    d[pos] = pos[::-1]
+                frames.append([(move[0],pos),graph,d])
+                #Display the problem with solution overlayed
+                #nx.draw_networkx(graph, pos = d, with_labels=False, node_size = 10, arrowstyle="->", arrowsize=10)
+                #plt.show()
+        
+            anim = FuncAnimation(fig = fig, func = animate, frames = len(moves), interval = 100, repeat = False)
+            anim.save('A.mp4',fps=5)
+
+        #Moves needed
+        vals.append(len(moves)/n**2)
+
+        #path length needed
+        paths.append(sum([len(move) for move in moves]) - len(moves))
         times.append(time.time() - t)
+    print(np.mean(vals), np.std(vals), np.max(vals))
+    print(np.mean(paths), np.std(paths), np.max(paths))
     print(np.mean(times), np.std(times), np.max(times))
 
 def rearange(sites,bounds):
@@ -325,7 +368,20 @@ def rearange(sites,bounds):
     x1,y1,x2,y2 = bounds
     targets = sites[y1:y2,x1:x2]
     fill = fill_in(targets)
-    a = create_moves(sites,fill,bounds, exact = False)
-    return
+    moves = create_moves(sites,fill,bounds, exact = False)
+    return moves
 
-average(15,10)
+#import pprofile
+#profiler = pprofile.Profile()
+#with profiler:
+#    average(15,10)
+# Process profile content: generate a cachegrind file and send it to user.
+
+# You can also write the result to the console:
+#profiler.dump_stats("/tmp/profiler_stats.txt")
+
+from matplotlib import pyplot as plt
+import networkx as nx
+from matplotlib.animation import FuncAnimation
+
+average(15,1)
