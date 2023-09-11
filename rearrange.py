@@ -63,13 +63,11 @@ def fill_in(arr, pad = True):
     height, width = arr.shape
 
     #The idea here is to connect all clusters as optimally as possible
-    #Start by filling positions where three clusters meet
-    #This covers positions where four meet too
+    #Start by filling positions where three or four clusters meet
     for rot in range(0,4):
         #Find clusters
         lw, num = ndimage.label(arr)
 
-        #Use the function to find where three clusters converge, and add those sites
         #TODO find spots where four clusters can be connected by placing two sites
         threes = has_unique_neighbors(lw,rot)
         arr = threes | arr
@@ -86,7 +84,7 @@ def fill_in(arr, pad = True):
         #each remaining cluster at that point
         dist, dist_y, dist_x = calc_dist_arr(d)
         
-        #Find all positions with a higher numbered cluster at a distance of 2
+        #Find all positions with a higher numbered cluster at a distance of d
         temp1 = ndimage.maximum_filter(lw,footprint=dist, mode='constant')
         positions = np.argwhere((temp1 > lw) & arr)
         
@@ -95,6 +93,9 @@ def fill_in(arr, pad = True):
 
         parent = np.int32(range(0,num+1))
         size = np.int32(np.ones(num+1))
+
+        #We want to try keeping cluster sizes uniform
+        np.random.shuffle(positions)
 
         for y,x in positions:
             #Need to find which relative position the other clusters are
@@ -129,6 +130,39 @@ def fill_in(arr, pad = True):
         lw, num = ndimage.label(arr)
         d += 1
     return 1 - arr[1:-1,1:-1]
+
+    
+def push_to_bottom(start, sites, inside, perimeter, bounds):
+    #takes position relative to bounding box
+    #returns path relative to entire array
+
+    x1,y1,x2,y2 = bounds
+    
+    pos = tuple(start)
+    paths = []
+    path = [pos]
+    move = None
+    
+    while sites[pos][0] != []:
+        move = sites[pos][0][-1]
+        pos = (pos[0] + move[0], pos[1] + move[1])
+        path.append(move)
+        #If we encounter another atom, push that one first
+        if inside[pos] == 1:
+            paths = paths + push_to_bottom(pos, sites, inside, perimeter, bounds)
+    if move is not None:
+        prev = (pos[0] - move[0], pos[1] - move[1])
+        sites[prev][0].pop()
+    root = sites[pos][1]
+    
+    sites[root][2] -= 1
+    inside[path[0]] = 0
+    path[0] = (path[0][0] + y1, path[0][1] + x1)
+    perimeter[(root[0] + y1, root[1] + x1)] -= 1
+    paths.append(path)
+    return paths
+
+    
 
 def create_moves(atoms, fill, bounds, exact = False):
     #takes an array of atom positions and its filled version
@@ -200,36 +234,6 @@ def create_moves(atoms, fill, bounds, exact = False):
 
     #Next step is to find sites in our list with an atom already present
     #and then push that atom to the bottom of the tree
-    def push_to_bottom(start):
-        #takes position relative to bounding box
-        #returns path relative to entire array
-        
-        pos = tuple(start)
-        path = [pos]
-        move = None
-        
-        while sites[pos][0] != []:
-            move = sites[pos][0][-1]
-            pos = (pos[0] + move[0], pos[1] + move[1])
-            path.append(move)
-            #If we encounter another atom, push that one first
-            if inside[pos] == 1:
-                moves.append(push_to_bottom(pos))
-        if move is not None:
-            prev = (pos[0] - move[0], pos[1] - move[1])
-            #Remove the site we just filled from tree
-            sites[prev][0].pop()
-        root = sites[pos][1]
-        
-        sites[root][2] -= 1
-        inside[path[0]] = 0
-        path[0] = (path[0][0] + y1, path[0][1] + x1)
-        atoms[path[0]] = 0
-        atoms[(pos[0] + y1, pos[1] + x1)] = 1
-        if not exact:
-            perimeter[(root[0] + y1, root[1] + x1)] -= 1
-        
-        return path
     
     moves = []
     inside = atoms[y1:y2,x1:x2]
@@ -239,7 +243,7 @@ def create_moves(atoms, fill, bounds, exact = False):
         #If we fail to move it, another atom was encountered
         #and was moved instead, so retry
         if inside[*atom]:
-            moves.append(push_to_bottom(atom))
+            moves.extend(push_to_bottom(atom, sites, inside, perimeter, bounds))
     #Finally, connect atoms outside the target zone
     #to perimeter points, using a linear sum assignment optimiser
     out = np.copy(atoms)
@@ -251,15 +255,22 @@ def create_moves(atoms, fill, bounds, exact = False):
         costs = cdist(free_atoms, np.array(perimeter) + (y1,x1))
         pairs = lsa(costs)
         print(costs[pairs].sum())
-    
     else:
         #Do a breadth first search outwards from every point
         #The search automatically gives the path needed
 
         #Mark target sites so we can avoid them
         out[y1:y2,x1:x2] = 2
-        
+
+        #Start with shallowest first
+        depth = []
+        temp = []
         for i in perimeter:
+            temp.append(i)
+            depth.append(perimeter[i])
+        temp = np.array(temp)
+        for i in temp[np.argsort(np.array(depth))]:
+            i = tuple(i)
             on_perimeter = False
             ind = 0
             q2 = [i]
@@ -274,10 +285,8 @@ def create_moves(atoms, fill, bounds, exact = False):
                 
                 if out[site] == 1:
                     #If we've found a 1, move it to the root node
-                    atoms[site] = 0
                     out[site] = 0
-                    atoms[i] = 1
-                    path = [site] + visited[site][::-1] + push_to_bottom((i[0] - y1,i[1]-x1))[1:]
+                    path = [site] + visited[site][::-1] + push_to_bottom((i[0] - y1,i[1]-x1), sites, inside, perimeter, bounds)[0][1:]
                     moves.append(path)
 
                 if perimeter[i] <= 0:
@@ -305,7 +314,7 @@ def average(n,reps):
         t = time.time()
         #Create lattice
         np.random.seed(test)
-        N = int(n*1.5 + 1) #Should have enough atoms
+        N = int(n*1.5 + 10) #Should have enough atoms
         arr = np.random.randint(0,2,(N,N))
         copy = arr.copy()
         diff = (N - n)//2
@@ -316,19 +325,20 @@ def average(n,reps):
         #Number of moves needed is equal to the number of 1s in the central n*n square
         #We calculate this by calculating the number of 0s and subtract from n**2
 
-        frames = []
-        fig = plt.figure()
-        def animate(i):
-            #Each frame, we clear the plot, then make a new one
-            print(i)
-            plt.cla()
-            plt.imshow(copy)
-            nx.draw_networkx(frames[i][1], pos = frames[i][2], with_labels=False, node_size = 15, arrowstyle="->", arrowsize=10)
-            copy[frames[i][0][0]] = 0
-            copy[frames[i][0][1]] = 1
-            return plt
-
         if reps == 1:
+
+            frames = []
+            fig = plt.figure()
+            def animate(i):
+                #Each frame, we clear the plot, then make a new one
+                print(i)
+                plt.cla()
+                plt.imshow(copy)
+                nx.draw_networkx(frames[i][1], pos = frames[i][2], with_labels=False, node_size = 5, arrowstyle="->", arrowsize=5)
+                copy[frames[i][0][0]] = 0
+                copy[frames[i][0][1]] = 1
+                return plt
+        
             # Create an empty graph
             for move in moves:
                 graph = nx.DiGraph()
@@ -358,9 +368,7 @@ def average(n,reps):
         #path length needed
         paths.append(sum([len(move) for move in moves]) - len(moves))
         times.append(time.time() - t)
-    print(np.mean(vals), np.std(vals), np.max(vals))
-    print(np.mean(paths), np.std(paths), np.max(paths))
-    print(np.mean(times), np.std(times), np.max(times))
+    return vals, paths, times
 
 def rearange(sites,bounds):
     #Input a binary array representing the initial loading
@@ -370,6 +378,48 @@ def rearange(sites,bounds):
     fill = fill_in(targets)
     moves = create_moves(sites,fill,bounds, exact = False)
     return moves
+
+def graphs():
+
+    num = np.array([15,25,50,100,200,300])
+    reps = np.array([1000,500,100,20,5,3])
+
+    moves = []
+    std_moves = []
+    path_length = []
+    std_path = []
+    times = []
+    std_times = []
+    for i in range(len(num)):
+        a,b,c = average(num[i],reps[i])
+        moves.append(np.mean(a))
+        std_moves.append(np.std(a)/reps[i]**0.5)
+        
+        path_length.append(np.mean(b))
+        std_path.append(np.std(b)/reps[i]**0.5)
+        
+        
+        times.append(np.mean(c))
+        std_times.append(np.std(c)/reps[i]**0.5)
+    
+    plt.errorbar(num**2,moves,std_moves)
+    plt.title("Percolation based algorithm - large N")
+    plt.xlabel("Number of target sites")
+    plt.ylabel("Number of moves needed per site")
+    plt.show()
+
+    
+    plt.errorbar(num**2,path_length,std_path)
+    plt.title("Percolation based algorithm - large N")
+    plt.xlabel("Number of target sites")
+    plt.ylabel("Length of path travelled")
+    plt.show()
+
+    plt.errorbar(num**2,times,std_times)
+    plt.title("Percolation based algorithm - large N")
+    plt.xlabel("Number of target sites")
+    plt.ylabel("Execution time")
+    plt.show()
 
 #import pprofile
 #profiler = pprofile.Profile()
@@ -384,4 +434,6 @@ from matplotlib import pyplot as plt
 import networkx as nx
 from matplotlib.animation import FuncAnimation
 
-average(15,1)
+#graphs()
+temp = average(15,100)
+print(np.mean(temp,axis = 1), np.max(temp, axis = 1))
