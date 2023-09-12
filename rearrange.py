@@ -1,13 +1,9 @@
 import numpy as np
 from scipy import ndimage
 import time
-from scipy.spatial.distance import cdist
-from scipy.optimize import linear_sum_assignment as lsa
-
-#We use an (N,N) grid, where an inner (n,n) grid is the target
-#so number of target sites is n^2
-N = 25
-n = 15
+from matplotlib import pyplot as plt
+import networkx as nx
+from matplotlib.animation import FuncAnimation
 
 def calc_dist_arr(d):
     #Generates array of positions that are a distance of d from the centre
@@ -22,16 +18,11 @@ def calc_dist_arr(d):
     y,x = np.where(dist)
     return dist, y - d, x - d
 
-            
 def find(parent,item):
-    #Finds the parent of an item
-    #Uses the "path halving" technique
-    #See https://en.wikipedia.org/wiki/Disjoint-set_data_structure
-    while parent[item] != item:
-        temp = parent[parent[item]]
-        parent[item] = temp
-        item = temp
-    return item
+    #Finds the parent of an item, and applies path compression
+    if parent[item] != item:
+        parent[item] = find(parent,parent[item])
+    return parent[item]
 
 def has_unique_neighbors(lw, i):
     # Define a function to check if three neighbors are different
@@ -106,13 +97,8 @@ def fill_in(arr, pad = True):
                 edge = lw[y,x], lw[ys[key],xs[key]]
                 p0, p1 = find(parent,edge[0]), find(parent,edge[1])
                 if p0 != p1:
-                    #Perform union by size to give essentially O(n) complexity
-                    if size[p0] >= size[p1]:
-                        parent[p1] = p0
-                        size[p0] += size[p1]
-                    else:
-                        parent[p0] = p1
-                        size[p1] += size[p0]
+                    #Union the two sets
+                    parent[p0] = p1
                     
                     offset = [0, 0]
                     point = [dist_y[key], dist_x[key]]
@@ -161,9 +147,7 @@ def push_to_bottom(start, sites, inside, perimeter, bounds):
     perimeter[(root[0] + y1, root[1] + x1)] -= 1
     paths.append(path)
     return paths
-
     
-
 def create_moves(atoms, fill, bounds, exact = False):
     #takes an array of atom positions and its filled version
     #generates a set of moves to fill in the inner (n,n) square
@@ -179,11 +163,8 @@ def create_moves(atoms, fill, bounds, exact = False):
 
     x1,y1,x2,y2 = bounds
 
-    #Keeps track of perimeter points, plus multiplicity
-    if exact:
-        perimeter = []
-    else:
-        perimeter = {}
+    #Keeps track of perimeter points, plus depth of its tree
+    perimeter = {}
     
     #We perform a breadth first search to reach every site in the shortest distance
     #Add unsearched sites to a queue
@@ -196,10 +177,7 @@ def create_moves(atoms, fill, bounds, exact = False):
         sites[site] = [[],site,1]
         q.append(site)
         site = (site[0] + y1, site[1] + x1)
-        if exact:
-            perimeter.append(site)
-        else:
-            perimeter[site] = 1
+        perimeter[site] = 1
     
     offsets = [(0, -1), (0, 1), (-1, 0), (1, 0)]
     on_perimeter = True
@@ -224,11 +202,8 @@ def create_moves(atoms, fill, bounds, exact = False):
                 sites[adj] = ([],root)
                 
                 sites[root][2] += 1
-                if exact:
-                    perimeter.append(root)
-                else:
-                    root = (root[0] + y1, root[1] + x1)
-                    perimeter[root] += 1
+                root = (root[0] + y1, root[1] + x1)
+                perimeter[root] += 1
                 q.append(adj)
         ind+=1
 
@@ -245,65 +220,60 @@ def create_moves(atoms, fill, bounds, exact = False):
         if inside[*atom]:
             moves.extend(push_to_bottom(atom, sites, inside, perimeter, bounds))
     #Finally, connect atoms outside the target zone
-    #to perimeter points, using a linear sum assignment optimiser
     out = np.copy(atoms)
     out[y1:y2,x1:x2] = 0
     
     free_atoms = np.argwhere(out)
+
+    #Do a breadth first search outwards from every point
+    #The search automatically gives the path needed
+
+    #Mark target sites so we can avoid them
+    out[y1:y2,x1:x2] = 2
+
+    #Start with shallowest first
+    depth = []
+    temp = []
+    for i in perimeter:
+        temp.append(i)
+        depth.append(perimeter[i])
+    temp = np.array(temp)
     
-    if exact:
-        costs = cdist(free_atoms, np.array(perimeter) + (y1,x1))
-        pairs = lsa(costs)
-        print(costs[pairs].sum())
-    else:
-        #Do a breadth first search outwards from every point
-        #The search automatically gives the path needed
+    for i in temp[np.argsort(np.array(depth))]:
+        i = tuple(i)
+        on_perimeter = False
+        ind = 0
+        q2 = [i]
+        visited = {i:[]}
+        while ind < len(q2):
+            site = q2[ind]
+            
+            if out[site] == 2 and ind != 0:
+                ind += 1
+                #Stop whenever we hit a target site
+                continue
+            
+            if out[site] == 1:
+                #If we've found a 1, move it to the root node
+                out[site] = 0
+                path = [site] + visited[site][::-1] + push_to_bottom((i[0] - y1,i[1]-x1), sites, inside, perimeter, bounds)[0][1:]
+                moves.append(path)
 
-        #Mark target sites so we can avoid them
-        out[y1:y2,x1:x2] = 2
-
-        #Start with shallowest first
-        depth = []
-        temp = []
-        for i in perimeter:
-            temp.append(i)
-            depth.append(perimeter[i])
-        temp = np.array(temp)
-        for i in temp[np.argsort(np.array(depth))]:
-            i = tuple(i)
-            on_perimeter = False
-            ind = 0
-            q2 = [i]
-            visited = {i:[]}
-            while ind < len(q2):
-                site = q2[ind]
-                
-                if out[site] == 2 and ind != 0:
-                    ind += 1
-                    #Stop whenever we hit a target site
-                    continue
-                
-                if out[site] == 1:
-                    #If we've found a 1, move it to the root node
-                    out[site] = 0
-                    path = [site] + visited[site][::-1] + push_to_bottom((i[0] - y1,i[1]-x1), sites, inside, perimeter, bounds)[0][1:]
-                    moves.append(path)
-
-                if perimeter[i] <= 0:
-                    break
-                
-                #The four neighbouring sites
-                indices = [(site[0] + a[0], site[1] + a[1]) for a in offsets]
-                
-                #Make sure we stay in bounds
-                valid = [(ni, nj) for ni, nj in indices if 0 <= ni < out.shape[0] and 0 <= nj < out.shape[1]]
-                
-                for adj in valid:
-                    if adj not in visited:
-                        move = (site[0] - adj[0], site[1] - adj[1])
-                        visited[adj] = visited[site] + [move]
-                        q2.append(adj)
-                ind+=1
+            if perimeter[i] <= 0:
+                break
+            
+            #The four neighbouring sites
+            indices = [(site[0] + a[0], site[1] + a[1]) for a in offsets]
+            
+            #Make sure we stay in bounds
+            valid = [(ni, nj) for ni, nj in indices if 0 <= ni < out.shape[0] and 0 <= nj < out.shape[1]]
+            
+            for adj in valid:
+                if adj not in visited:
+                    move = (site[0] - adj[0], site[1] - adj[1])
+                    visited[adj] = visited[site] + [move]
+                    q2.append(adj)
+            ind+=1
     return moves
 
 def average(n,reps):
@@ -314,7 +284,7 @@ def average(n,reps):
         t = time.time()
         #Create lattice
         np.random.seed(test)
-        N = int(n*1.5 + 10) #Should have enough atoms
+        N = int(n*1.5 + 1) #Should have enough atoms
         arr = np.random.randint(0,2,(N,N))
         copy = arr.copy()
         diff = (N - n)//2
@@ -420,19 +390,6 @@ def graphs():
     plt.xlabel("Number of target sites")
     plt.ylabel("Execution time")
     plt.show()
-
-#import pprofile
-#profiler = pprofile.Profile()
-#with profiler:
-#    average(15,10)
-# Process profile content: generate a cachegrind file and send it to user.
-
-# You can also write the result to the console:
-#profiler.dump_stats("/tmp/profiler_stats.txt")
-
-from matplotlib import pyplot as plt
-import networkx as nx
-from matplotlib.animation import FuncAnimation
 
 #graphs()
 temp = average(15,100)
