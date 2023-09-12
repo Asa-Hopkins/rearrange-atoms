@@ -4,6 +4,8 @@ import time
 from matplotlib import pyplot as plt
 import networkx as nx
 from matplotlib.animation import FuncAnimation
+from scipy.spatial.distance import cdist
+from numba import jit
 
 def calc_dist_arr(d):
     #Generates array of positions that are a distance of d from the centre
@@ -26,7 +28,6 @@ def find(parent,item):
 
 def has_unique_neighbors(lw, i):
     # Define a function to check if three neighbors are different
-    #TODO: avoid the calculation of the unneeded direction
 
     above = np.roll(lw, 1, axis=0)
     below = np.roll(lw, -1, axis=0)
@@ -59,20 +60,17 @@ def fill_in(arr, pad = True):
         #Find clusters
         lw, num = ndimage.label(arr)
 
-        #TODO find spots where four clusters can be connected by placing two sites
+        #TODO check for redundancies
         threes = has_unique_neighbors(lw,rot)
         arr = threes | arr
 
     #Update cluster labels
-    #TODO could use a flood fill algorithm to update only the necessary part
     lw, num = ndimage.label(arr)
 
     d = 2
     while num != 1:
         #We now connect all clusters that require 1 or more sites added
         #The drop off of these is exponential, d = 3 is rarely reached
-        #Probably faster to do a shortest path algorithm from
-        #each remaining cluster at that point
         dist, dist_y, dist_x = calc_dist_arr(d)
         
         #Find all positions with a higher numbered cluster at a distance of d
@@ -117,8 +115,7 @@ def fill_in(arr, pad = True):
         d += 1
     return 1 - arr[1:-1,1:-1]
 
-    
-def push_to_bottom(start, sites, inside, perimeter, bounds):
+def push_to_bottom(start, sites, inside, bounds):
     #takes position relative to bounding box
     #returns path relative to entire array
 
@@ -135,25 +132,64 @@ def push_to_bottom(start, sites, inside, perimeter, bounds):
         path.append(move)
         #If we encounter another atom, push that one first
         if inside[pos] == 1:
-            paths = paths + push_to_bottom(pos, sites, inside, perimeter, bounds)
+            paths = paths + push_to_bottom(pos, sites, inside, bounds)
     if move is not None:
         prev = (pos[0] - move[0], pos[1] - move[1])
         sites[prev][0].pop()
-    root = sites[pos][1]
     
-    sites[root][2] -= 1
     inside[path[0]] = 0
     path[0] = (path[0][0] + y1, path[0][1] + x1)
-    perimeter[(root[0] + y1, root[1] + x1)] -= 1
     paths.append(path)
     return paths
+
+def move_to_hole(a,b,bounds):
+    #Move a point from a to b, avoiding the target area
+    #Imagine a rectangle with a and b at opposite corners
+    #If this doesn't intersect the target area, either corner can be the turning point
+    #If one corner is inside the target area, use the other one
+    #Otherwise, move to nearest corner and go around
+    x1,y1,x2,y2 = bounds
+    #Modify b to be one step away from the perimeter
+    shift = [int(b[0] == y2 - 1) - int(b[0] == y1),0]
+    if shift[0] == 0:
+        shift[1] = int(b[1] == x2 - 1) - int(b[1] == x1)
+    b = [b[0] + shift[0], b[1] + shift[1]]
+
+    #Get top left and bottom right corners
+    rect = [[min(a[0],b[0]),min(a[1],b[1])], [max(a[0],b[0]),max(a[1],b[1])]]
+
+    #The turning/end points, a straight line is travelled between each
+    points = []
+    move = [tuple(a)]
+
+    #https://stackoverflow.com/questions/306316/determine-if-two-rectangles-overlap-each-other
+    intersect = (rect[0][1] < x2 and rect[1][1] >= x1 and rect[0][0] < y2 and rect[1][0] >= y1)
+    if not intersect:
+        points.append([a[0],b[1]])
+    else:
+        if y1 <= a[0] < y2 and x1 <= b[1] < x2:
+            points.append([b[0],a[1]])
+        elif y1 <= b[0] < y2 and x1 <= a[1] < x2:
+            points.append([a[0],b[1]])
+        else:
+            points.append((0,0))
+            points.append((0,0))
+    points.append(b)
+    for point in points:
+        diff = (point[0] - a[0],point[1] - a[1])
+        if diff != (0,0):
+            move.append(diff)
+        a = point
+    move.append((-shift[0],-shift[1]))
+    return move
+    
     
 def create_moves(atoms, fill, bounds, exact = False):
     #takes an array of atom positions and its filled version
     #generates a set of moves to fill in the inner (n,n) square
     #Essentially builds an MST, then pushes atoms to the bottom until it's full
-    #Complexity is O(n^6) for exact, I think an O(n^3) approximation is possible
-    #Total path length will be O(n^3), so that's the lower bound anyway
+    #Complexity O(n^3)
+    #Total path length will be O(n^3), so that's the lower bound
     
     sites = {}
     
@@ -174,7 +210,7 @@ def create_moves(atoms, fill, bounds, exact = False):
         site = tuple(site)
         #first list is the connected nodes, second is the root node
         #Third is number of nodes under this one, only needed for the root node
-        sites[site] = [[],site,1]
+        sites[site] = [[],site]
         q.append(site)
         site = (site[0] + y1, site[1] + x1)
         perimeter[site] = 1
@@ -201,7 +237,6 @@ def create_moves(atoms, fill, bounds, exact = False):
                 root = sites[site][1]
                 sites[adj] = ([],root)
                 
-                sites[root][2] += 1
                 root = (root[0] + y1, root[1] + x1)
                 perimeter[root] += 1
                 q.append(adj)
@@ -218,7 +253,11 @@ def create_moves(atoms, fill, bounds, exact = False):
         #If we fail to move it, another atom was encountered
         #and was moved instead, so retry
         if inside[*atom]:
-            moves.extend(push_to_bottom(atom, sites, inside, perimeter, bounds))
+            temp = push_to_bottom(atom, sites, inside, bounds)
+            moves.extend(temp)
+            root = sites[tuple(atom)][1]
+            perimeter[(root[0] + y1, root[1] + x1)] -= len(temp)
+            
     #Finally, connect atoms outside the target zone
     out = np.copy(atoms)
     out[y1:y2,x1:x2] = 0
@@ -239,108 +278,24 @@ def create_moves(atoms, fill, bounds, exact = False):
         depth.append(perimeter[i])
     temp = np.array(temp)
     
-    for i in temp[np.argsort(np.array(depth))]:
-        i = tuple(i)
-        on_perimeter = False
-        ind = 0
-        q2 = [i]
-        visited = {i:[]}
-        while ind < len(q2):
-            site = q2[ind]
-            
-            if out[site] == 2 and ind != 0:
-                ind += 1
-                #Stop whenever we hit a target site
+    #For each hole, find the nearest unassigned atom
+    dists = cdist(temp,free_atoms,'cityblock')
+    order = np.argsort(dists)
+    assigned = {}
+    for hole_num in np.argsort(np.array(depth)):
+        hole = tuple(temp[hole_num])
+        i = -1
+        while perimeter[hole] > 0:
+            i += 1
+            if order[hole_num][i] in assigned:
                 continue
-            
-            if out[site] == 1:
-                #If we've found a 1, move it to the root node
-                out[site] = 0
-                path = [site] + visited[site][::-1] + push_to_bottom((i[0] - y1,i[1]-x1), sites, inside, perimeter, bounds)[0][1:]
-                moves.append(path)
-
-            if perimeter[i] <= 0:
-                break
-            
-            #The four neighbouring sites
-            indices = [(site[0] + a[0], site[1] + a[1]) for a in offsets]
-            
-            #Make sure we stay in bounds
-            valid = [(ni, nj) for ni, nj in indices if 0 <= ni < out.shape[0] and 0 <= nj < out.shape[1]]
-            
-            for adj in valid:
-                if adj not in visited:
-                    move = (site[0] - adj[0], site[1] - adj[1])
-                    visited[adj] = visited[site] + [move]
-                    q2.append(adj)
-            ind+=1
+            move = move_to_hole(free_atoms[order[hole_num][i]],hole,bounds) + push_to_bottom([hole[0] - y1, hole[1] - x1],sites,inside,bounds)[0][1:]
+            perimeter[hole] -= 1
+            moves.append(move)
+            assigned[order[hole_num][i]] = 1
     return moves
 
-def average(n,reps):
-    vals = []
-    times = []
-    paths = []
-    for test in range(0,reps):
-        t = time.time()
-        #Create lattice
-        np.random.seed(test)
-        N = int(n*1.5 + 1) #Should have enough atoms
-        arr = np.random.randint(0,2,(N,N))
-        copy = arr.copy()
-        diff = (N - n)//2
-        bound = (diff, diff, diff + n, diff + n)
-
-        moves = rearange(arr,bound)
-        
-        #Number of moves needed is equal to the number of 1s in the central n*n square
-        #We calculate this by calculating the number of 0s and subtract from n**2
-
-        if reps == 1:
-
-            frames = []
-            fig = plt.figure()
-            def animate(i):
-                #Each frame, we clear the plot, then make a new one
-                print(i)
-                plt.cla()
-                plt.imshow(copy)
-                nx.draw_networkx(frames[i][1], pos = frames[i][2], with_labels=False, node_size = 5, arrowstyle="->", arrowsize=5)
-                copy[frames[i][0][0]] = 0
-                copy[frames[i][0][1]] = 1
-                return plt
-        
-            # Create an empty graph
-            for move in moves:
-                graph = nx.DiGraph()
-                d = {}
-                pos = move[0]
-                #plt.imshow(copy)
-                prev = pos
-                graph.add_node(pos)
-                d[pos] = pos[::-1]
-                for i in move[1:]:
-                    prev = pos
-                    pos = (pos[0] + i[0], pos[1] + i[1])
-                    graph.add_node(pos)
-                    graph.add_edge(prev,pos)
-                    d[pos] = pos[::-1]
-                frames.append([(move[0],pos),graph,d])
-                #Display the problem with solution overlayed
-                #nx.draw_networkx(graph, pos = d, with_labels=False, node_size = 10, arrowstyle="->", arrowsize=10)
-                #plt.show()
-        
-            anim = FuncAnimation(fig = fig, func = animate, frames = len(moves), interval = 100, repeat = False)
-            anim.save('A.mp4',fps=5)
-
-        #Moves needed
-        vals.append(len(moves)/n**2)
-
-        #path length needed
-        paths.append(sum([len(move) for move in moves]) - len(moves))
-        times.append(time.time() - t)
-    return vals, paths, times
-
-def rearange(sites,bounds):
+def rearrange(sites,bounds):
     #Input a binary array representing the initial loading
     #and a bounding box for target site locations
     x1,y1,x2,y2 = bounds
@@ -348,6 +303,70 @@ def rearange(sites,bounds):
     fill = fill_in(targets)
     moves = create_moves(sites,fill,bounds, exact = False)
     return moves
+
+def random_run(n, N, bounds ,seed , animate = False):
+    #Create a random lattice loading and rearrange it
+    np.random.seed(seed)
+    arr = np.random.randint(0,2,(N,N))
+    copy = arr.copy()
+    moves = rearrange(arr,bounds)
+    
+    #Number of moves needed is equal to the number of 1s in the central n*n square
+    #We calculate this by calculating the number of 0s and subtract from n**2
+
+    if animate:
+        frames = []
+        fig = plt.figure()
+        
+        def animate(i):
+            #Each frame, we clear the plot, then make a new one
+            print(i)
+            plt.cla()
+            plt.imshow(copy)
+            nx.draw_networkx(frames[i][1], pos = frames[i][2], with_labels=False, node_size = 5, arrowstyle="->", arrowsize=5)
+            copy[frames[i][0][0]] = 0
+            copy[frames[i][0][1]] = 1
+            return plt
+    
+        # Create an empty graph
+        for move in moves:
+            graph = nx.DiGraph()
+            d = {}
+            pos = move[0]
+            #plt.imshow(copy)
+            prev = pos
+            graph.add_node(pos)
+            d[pos] = pos[::-1]
+            for i in move[1:]:
+                prev = pos
+                pos = (pos[0] + i[0], pos[1] + i[1])
+                graph.add_node(pos)
+                graph.add_edge(prev,pos)
+                d[pos] = pos[::-1]
+            frames.append([(move[0],pos),graph,d])
+    
+        anim = FuncAnimation(fig = fig, func = animate, frames = len(moves), interval = 100, repeat = False)
+        anim.save('A.mp4',fps=5)
+    return moves
+    
+def average(n,reps):
+    vals = []
+    times = []
+    paths = []
+    N = int(n*1.5 + 1) #Should have enough atoms
+    diff = (N - n)//2
+    bounds = (diff, diff, diff + n, diff + n)
+    for rep in range(0,reps):
+        t = time.time()
+
+        moves = random_run(n,N,bounds,rep,animate = False)
+        #Moves needed
+        vals.append(len(moves)/n**2)
+
+        #path length needed
+        paths.append(sum([len(move) for move in moves]) - len(moves))
+        times.append(time.time() - t)
+    return vals, paths, times
 
 def graphs():
 
@@ -391,6 +410,11 @@ def graphs():
     plt.ylabel("Execution time")
     plt.show()
 
-#graphs()
+#import pprofile
+#prof = pprofile.Profile()
+#with prof():
+#    temp = average(15,10)
+#prof.dump_stats('/tmp/prof.txt')
+    
 temp = average(15,100)
 print(np.mean(temp,axis = 1), np.max(temp, axis = 1))
