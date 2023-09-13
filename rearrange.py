@@ -44,9 +44,9 @@ def has_unique_neighbors(lw, i):
     rot = rot[i:] + rot[:i]
     
     # Check if all neighbors are different
-    temp1 = (rot[0] != rot[1]) & (rot[0] != rot[2]) & (rot[1] != rot[2])
-    temp2 = (rot[0] != 0) & (rot[1] != 0) & (rot[2] != 0)
-    return temp1 & temp2
+    unique = (rot[0] != rot[1]) & (rot[0] != rot[2]) & (rot[1] != rot[2])
+    nonzero = (rot[0] != 0) & (rot[1] != 0) & (rot[2] != 0)
+    return unique & nonzero
 
 def fill_in(arr, pad = True):
     #Clears sites in the given array near-optimally to reach percolation
@@ -80,8 +80,8 @@ def fill_in(arr, pad = True):
         dist, dist_y, dist_x = calc_dist_arr(d)
         
         #Find all positions with a higher numbered cluster at a distance of d
-        temp1 = ndimage.maximum_filter(lw,footprint=dist, mode='constant')
-        positions = np.argwhere((temp1 > lw) & arr)
+        highest = ndimage.maximum_filter(lw,footprint=dist, mode='constant')
+        positions = np.argwhere((highest > lw) & arr)
         
         #We essentially use Kruskal's algorithm to build a MST to connect the remaining clusters
         #'inspired' by https://www.geeksforgeeks.org/introduction-to-disjoint-set-data-structure-or-union-find-algorithm/
@@ -126,17 +126,24 @@ def fill_in(arr, pad = True):
     else:
         return 1 - arr
 
+cache = [0]
+
 def push_to_bottom(start, sites, inside, bounds):
     #takes position relative to bounding box
     #returns path relative to entire array
-
+    global cache
     x1,y1,x2,y2 = bounds
-    
+    prev = 0
     pos = tuple(start)
     paths = []
-    path = [pos]
+    path = [(pos[0] + y1, pos[1] + x1)]
+    inside[pos] = 0
     move = None
-    
+    if cache[0] == path[0] and len(cache) > 2:
+        pos = cache[-1]
+        path = cache[:-1]
+        move = cache[-2]
+        
     while sites[pos][0] != []:
         move = sites[pos][0][-1]
         pos = (pos[0] + move[0], pos[1] + move[1])
@@ -147,10 +154,8 @@ def push_to_bottom(start, sites, inside, bounds):
     if move is not None:
         prev = (pos[0] - move[0], pos[1] - move[1])
         sites[prev][0].pop()
-    
-    inside[path[0]] = 0
-    path[0] = (path[0][0] + y1, path[0][1] + x1)
     paths.append(path)
+    cache = path[:-1] + [prev]
     return paths
 
 def move_to_hole(a,b,bounds):
@@ -205,8 +210,8 @@ def create_moves(atoms, fill, bounds, exact = False):
     sites = {}
     
     #find zeros on the periimeter
-    temp = fill.copy()
-    temp[1:-1,1:-1] = 1
+    perim = fill.copy()
+    perim[1:-1,1:-1] = 1
 
     x1,y1,x2,y2 = bounds
 
@@ -217,7 +222,7 @@ def create_moves(atoms, fill, bounds, exact = False):
     #Add unsearched sites to a queue
     q = []
     ind = 0
-    for site in np.argwhere(temp == 0):
+    for site in np.argwhere(perim == 0):
         site = tuple(site)
         #first list is the connected nodes, second is the root node
         #Third is number of nodes under this one, only needed for the root node
@@ -244,7 +249,7 @@ def create_moves(atoms, fill, bounds, exact = False):
         
         for adj in valid:
             if adj not in sites and fill[adj] == 0:
-                sites[site][0].append(np.array((adj[0] - site[0], adj[1] - site[1])))
+                sites[site][0].append((adj[0] - site[0], adj[1] - site[1]))
                 root = sites[site][1]
                 sites[adj] = ([],root)
                 
@@ -264,10 +269,10 @@ def create_moves(atoms, fill, bounds, exact = False):
         #If we fail to move it, another atom was encountered
         #and was moved instead, so retry
         if inside[atom[0],atom[1]]:
-            temp = push_to_bottom(atom, sites, inside, bounds)
-            moves.extend(temp)
+            push = push_to_bottom(atom, sites, inside, bounds)
+            moves.extend(push)
             root = sites[tuple(atom)][1]
-            perimeter[(root[0] + y1, root[1] + x1)] -= len(temp)
+            perimeter[(root[0] + y1, root[1] + x1)] -= len(push)
             
     #Finally, connect atoms outside the target zone
     out = np.copy(atoms)
@@ -283,18 +288,18 @@ def create_moves(atoms, fill, bounds, exact = False):
 
     #Start with shallowest first
     depth = []
-    temp = []
+    holes = []
     for i in perimeter:
-        temp.append(i)
+        holes.append(i)
         depth.append(perimeter[i])
-    temp = np.array(temp)
+    holes = np.array(holes)
     
     #For each hole, find the nearest unassigned atom
-    dists = cdist(temp,free_atoms,'cityblock')
+    dists = cdist(holes,free_atoms,'cityblock')
     order = np.argsort(dists)
     assigned = {}
     for hole_num in np.argsort(np.array(depth)):
-        hole = tuple(temp[hole_num])
+        hole = tuple(holes[hole_num])
         i = -1
         while perimeter[hole] > 0:
             i += 1
@@ -371,10 +376,10 @@ def average(n,reps):
         t = time.time()
 
         moves = random_run(n,N,bounds,rep,animate = False)
-        #Moves needed
+        #Moves needed to rearrange 
         vals.append(len(moves)/n**2)
 
-        #path length needed
+        #path length needed to rearrange
         paths.append(sum([np.sum(np.abs(move[1:])) for move in moves]))
         times.append(time.time() - t)
     return vals, paths, times
@@ -424,8 +429,8 @@ def graphs():
 #import pprofile
 #prof = pprofile.Profile()
 #with prof():
-#    temp = average(100,1)
+#    avg = average(15,100)
 #prof.dump_stats('/tmp/prof.txt')
     
-temp = average(100,2)
-print(np.mean(temp,axis = 1), np.max(temp, axis = 1))
+avg = average(100,1)
+print(np.mean(avg,axis = 1), np.max(avg, axis = 1))
