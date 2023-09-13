@@ -28,11 +28,17 @@ def find(parent,item):
 
 def has_unique_neighbors(lw, i):
     # Define a function to check if three neighbors are different
-
     above = np.roll(lw, 1, axis=0)
+    above[0,:] = 0
+    
     below = np.roll(lw, -1, axis=0)
+    below[-1,:] = 0
+    
     left = np.roll(lw, -1, axis=1)
+    left[:,-1] = 0
+    
     right = np.roll(lw, 1, axis=1)
+    right[:,0] = 0
     
     rot = [above, below, left, right]
     rot = rot[i:] + rot[:i]
@@ -51,7 +57,7 @@ def fill_in(arr, pad = True):
     if pad:
         #Pad outside with zeros, but we want it to be ones, so we swap 0 and 1
         arr = np.pad(arr,[(1,1),(1,1)])
-        arr = 1-arr
+    arr = 1-arr
     height, width = arr.shape
 
     #The idea here is to connect all clusters as optimally as possible
@@ -88,8 +94,10 @@ def fill_in(arr, pad = True):
 
         for y,x in positions:
             #Need to find which relative position the other clusters are
-            ys = (dist_y + y) % height
-            xs = (dist_x + x) % width
+            ys = dist_y + y
+            ys[np.logical_or(height <= ys,ys < 0)] = y
+            xs = dist_x + x
+            xs[np.logical_or(width <= xs,xs < 0)] = x
             keys = np.nonzero(lw[ys,xs] > lw[y,x])
             for key in keys[0]:
                 edge = lw[y,x], lw[ys[key],xs[key]]
@@ -113,7 +121,10 @@ def fill_in(arr, pad = True):
         
         lw, num = ndimage.label(arr)
         d += 1
-    return 1 - arr[1:-1,1:-1]
+    if pad:
+        return 1 - arr[1:-1,1:-1]
+    else:
+        return 1 - arr
 
 def push_to_bottom(start, sites, inside, bounds):
     #takes position relative to bounding box
@@ -252,7 +263,7 @@ def create_moves(atoms, fill, bounds, exact = False):
     for atom in np.argwhere(inside):
         #If we fail to move it, another atom was encountered
         #and was moved instead, so retry
-        if inside[*atom]:
+        if inside[atom[0],atom[1]]:
             temp = push_to_bottom(atom, sites, inside, bounds)
             moves.extend(temp)
             root = sites[tuple(atom)][1]
@@ -295,7 +306,7 @@ def create_moves(atoms, fill, bounds, exact = False):
             assigned[order[hole_num][i]] = 1
     return moves
 
-def rearrange(sites,bounds):
+def rearrange(sites,bounds,pad = True):
     #Input a binary array representing the initial loading
     #and a bounding box for target site locations
     x1,y1,x2,y2 = bounds
@@ -364,7 +375,7 @@ def average(n,reps):
         vals.append(len(moves)/n**2)
 
         #path length needed
-        paths.append(sum([len(move) for move in moves]) - len(moves))
+        paths.append(sum([np.sum(np.abs(move[1:])) for move in moves]))
         times.append(time.time() - t)
     return vals, paths, times
 
@@ -413,8 +424,8 @@ def graphs():
 #import pprofile
 #prof = pprofile.Profile()
 #with prof():
-#    temp = average(15,10)
+#    temp = average(100,1)
 #prof.dump_stats('/tmp/prof.txt')
     
-temp = average(15,100)
+temp = average(100,2)
 print(np.mean(temp,axis = 1), np.max(temp, axis = 1))
