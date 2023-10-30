@@ -295,6 +295,7 @@ def create_moves(atoms, fill, bounds, exact = False):
     holes = np.array(holes)
     
     #For each hole, find the nearest unassigned atom
+    #Occassionally moves atoms through each other - needs fixing
     dists = cdist(holes,free_atoms,'cityblock')
     order = np.argsort(dists)
     assigned = {}
@@ -338,8 +339,10 @@ def random_run(n, N, bounds ,seed , animate = False):
             #Each frame, we clear the plot, then make a new one
             print(i)
             plt.cla()
-            plt.imshow(copy)
-            nx.draw_networkx(frames[i][1], pos = frames[i][2], with_labels=False, node_size = 5, arrowstyle="->", arrowsize=5)
+            plt.imshow(1 - copy, cmap='gray')
+            plt.xlim((-1,N))
+            plt.ylim((-1,N))
+            nx.draw_networkx(frames[i][1], pos = frames[i][2], with_labels=False, node_size = 5, arrowstyle="->", arrowsize=5, edge_color='red')
             copy[frames[i][0][0]] = 0
             copy[frames[i][0][1]] = 1
             return plt
@@ -349,23 +352,33 @@ def random_run(n, N, bounds ,seed , animate = False):
             graph = nx.DiGraph()
             d = {}
             pos = move[0]
-            #plt.imshow(copy)
             prev = pos
             graph.add_node(pos)
             d[pos] = pos[::-1]
-            for i in move[1:]:
-                prev = pos
-                pos = (pos[0] + i[0], pos[1] + i[1])
-                graph.add_node(pos)
-                graph.add_edge(prev,pos)
-                d[pos] = pos[::-1]
+            mov = move[1]
+            for i in move[2:]:
+                if mov[0]*i[0] + mov[1]*i[1] != 0:
+                    mov = [mov[0] + i[0], mov[1] + i[1]]
+                else:
+                    prev = pos
+                    pos = (pos[0] + mov[0], pos[1] + mov[1])
+                    mov = i
+                    graph.add_node(pos)
+                    graph.add_edge(prev,pos)
+                    d[pos] = pos[::-1]
+            
+            prev = pos
+            pos = (pos[0] + mov[0], pos[1] + mov[1])
+            graph.add_node(pos)
+            graph.add_edge(prev,pos)
+            d[pos] = pos[::-1]
             frames.append([(move[0],pos),graph,d])
     
         anim = FuncAnimation(fig = fig, func = animate, frames = len(moves), interval = 100, repeat = False)
-        anim.save('A.mp4',fps=5)
+        anim.save('Animation.mp4',fps=5, dpi=300)
     return moves
     
-def average(n,reps):
+def average(n,reps, anim = False):
     vals = []
     times = []
     paths = []
@@ -375,7 +388,7 @@ def average(n,reps):
     for rep in range(0,reps):
         t = time.time()
 
-        moves = random_run(n,N,bounds,rep,animate = False)
+        moves = random_run(n,N,bounds,rep,anim)
         #Moves needed to rearrange 
         vals.append(len(moves)/n**2)
 
@@ -426,11 +439,4 @@ def graphs():
     plt.ylabel("Execution time")
     plt.show()
 
-#import pprofile
-#prof = pprofile.Profile()
-#with prof():
-#    avg = average(15,100)
-#prof.dump_stats('/tmp/prof.txt')
-    
-avg = average(100,1)
-print(np.mean(avg,axis = 1), np.max(avg, axis = 1))
+average(40,1,True)
