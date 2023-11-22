@@ -5,7 +5,6 @@ from matplotlib import pyplot as plt
 import networkx as nx
 from matplotlib.animation import FuncAnimation
 from scipy.spatial.distance import cdist
-from numba import jit
 
 def calc_dist_arr(d):
     #Generates array of positions that are a distance of d from the centre
@@ -43,15 +42,15 @@ def has_unique_neighbors(lw, i):
     rot = [above, below, left, right]
     rot = rot[i:] + rot[:i]
     
-    # Check if all neighbors are different
+    # Check if all neighbours are different
     unique = (rot[0] != rot[1]) & (rot[0] != rot[2]) & (rot[1] != rot[2])
     nonzero = (rot[0] != 0) & (rot[1] != 0) & (rot[2] != 0)
     return unique & nonzero
 
 def fill_in(arr, pad = True):
-    #Clears sites in the given array near-optimally to reach percolation
+    #Clears sites in the given array to reach percolation
     #We swap 0 and 1 so it's a fill-in algorithm
-    #Equivalent to constructive a Rectilinear Steiner Tree between the 1s, but by
+    #Equivalent to constructing a Rectilinear Steiner Tree between the 1s, but by
     #using the statistics of the situation, we can generate very good solutions
     #Basically O(n^2), set unions have an inverse ackermann function but we can ignore that
     if pad:
@@ -375,7 +374,7 @@ def random_run(n, N, bounds ,seed , animate = False):
             frames.append([(move[0],pos),graph,d])
     
         anim = FuncAnimation(fig = fig, func = animate, frames = len(moves), interval = 100, repeat = False)
-        anim.save('Animation.mp4',fps=5, dpi=300)
+        anim.save('Animation.gif',fps=5, dpi=100)
     return moves
     
 def average(n,reps, anim = False):
