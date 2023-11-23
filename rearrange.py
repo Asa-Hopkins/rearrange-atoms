@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+"""
+Updated on Thu Nov 23 13:05 2023
+
+Available at https://github.com/Asa-Hopkins/rearrange-atoms/
+
+@author: Asa Hopkins
+"""
+
+
+
 import numpy as np
 from scipy import ndimage
 import time
@@ -7,7 +18,21 @@ from matplotlib.animation import FuncAnimation
 from scipy.spatial.distance import cdist
 
 def calc_dist_arr(d):
-    #Generates array of positions that are a distance of d from the centre
+    """Generates the positions that are d steps from a central point
+
+    Parameters
+    ----------
+    d : int
+        The number of steps to take
+
+    Returns
+    -------
+    dist : numpy array
+        An array which is 1 where the coordinate is d steps from the centre
+    y - d : numpy array
+        The y offsets of the points that are d steps from the centre
+    x - d : numpy array
+        The x offsets of the points that are d steps from the centre"""
     dist = []
     l = 2*d + 1
     for i in range(0,l + 1):
@@ -20,13 +45,38 @@ def calc_dist_arr(d):
     return dist, y - d, x - d
 
 def find(parent,item):
-    #Finds the parent of an item, and applies path compression
+    """Finds the parent of an item, and applies path compression
+
+    Parameters
+    ----------
+    parent : dictionary
+        A dictionary mapping each item to its parent
+    item : tuple
+        A coordinate which we want to find the parent of
+
+    Returns
+    -------
+    parent[item] : tuple
+        The coordinate which is the parent of the given one"""
     if parent[item] != item:
         parent[item] = find(parent,parent[item])
     return parent[item]
 
 def has_unique_neighbors(lw, i):
-    # Define a function to check if three neighbors are different
+    """Highlights all positions where the number of surrounding clusters is at least 3
+
+    Parameters
+    ----------
+    lw : numpy array
+        An array where all clusters have been assigned the same value
+    i : int
+        Which of the four rotations to check
+
+    Returns
+    -------
+    unique & nonzero : numpy array
+        An array which equals 1 where the number of surrounding clusters >=3"""
+    
     above = np.roll(lw, 1, axis=0)
     above[0,:] = 0
     
@@ -48,11 +98,21 @@ def has_unique_neighbors(lw, i):
     return unique & nonzero
 
 def fill_in(arr, pad = True):
-    #Clears sites in the given array to reach percolation
-    #We swap 0 and 1 so it's a fill-in algorithm
-    #Equivalent to constructing a Rectilinear Steiner Tree between the 1s, but by
-    #using the statistics of the situation, we can generate very good solutions
-    #Basically O(n^2), set unions have an inverse ackermann function but we can ignore that
+    """Clears sites in the given array to reach percolation (i.e so one cluster remains)
+    We swap 0 and 1 to be compatable with numpy functions, so it's actually a fill-in algorithm.
+    This is equivalent to another problem called the Rectilinear Steiner Tree, which is NP-hard.
+    Using the statistics of the situation, we can still get nearly optimal results in (almost) O(n^2) time.
+    Parameters
+    ----------
+    arr : numpy array
+        An array with 1s in filled sites and 0s in empty sites
+    pad : bool
+        Whether to pad with 0s or not, useful for benchmarking
+
+    Returns
+    -------
+    arr : numpy array
+        An array with 1s in filled sites and 0s in empty sites, with a path between all holes now"""
     if pad:
         #Pad outside with zeros, but we want it to be ones, so we swap 0 and 1
         arr = np.pad(arr,[(1,1),(1,1)])
@@ -83,7 +143,6 @@ def fill_in(arr, pad = True):
         positions = np.argwhere((highest > lw) & arr)
         
         #We essentially use Kruskal's algorithm to build a MST to connect the remaining clusters
-        #'inspired' by https://www.geeksforgeeks.org/introduction-to-disjoint-set-data-structure-or-union-find-algorithm/
 
         parent = np.int32(range(0,num+1))
         size = np.int32(np.ones(num+1))
@@ -128,6 +187,20 @@ def fill_in(arr, pad = True):
 cache = [0]
 
 def push_to_bottom(start, sites, inside, bounds):
+    """Given an atom in the target array, moves it to the end of the tree
+    Parameters
+    ----------
+    start : tuple
+        The coordinate of the atom to be moves
+    sites : dictionary
+        Maps each coordinate to an array containing its parent and its children coordinates
+    inside : numpy array
+        An array describing the state of the target zone, with a 1 at filled positions and a 0 at unfilled ones. 
+
+    Returns
+    -------
+    paths : list
+        A list describing the path taken to move the atom from the start to the end of the tree"""
     #takes position relative to bounding box
     #returns path relative to entire array
     global cache
@@ -158,11 +231,29 @@ def push_to_bottom(start, sites, inside, bounds):
     return paths
 
 def move_to_hole(a,b,bounds):
-    #Move a point from a to b, avoiding the target area
+    """Moves an atom from point a to point b, making sure not to cross the target area
+
+    Warning: still has some bugs    
+    
+    Parameters
+    ----------
+    a : tuple
+        starting coordinate
+    b : tuple
+        end coordinate
+    bounds : list
+        describes the rectangle containing the target area
+
+    Returns
+    -------
+    move : list
+        Describes the path taken to move from a to b, avoiding the target area"""
+    
     #Imagine a rectangle with a and b at opposite corners
     #If this doesn't intersect the target area, either corner can be the turning point
     #If one corner is inside the target area, use the other one
     #Otherwise, move to nearest corner and go around
+    
     x1,y1,x2,y2 = bounds
     #Modify b to be one step away from the perimeter
     shift = [int(b[0] == y2 - 1) - int(b[0] == y1),0]
@@ -199,13 +290,30 @@ def move_to_hole(a,b,bounds):
     return move
     
     
-def create_moves(atoms, fill, bounds, exact = False):
-    #takes an array of atom positions and its filled version
-    #generates a set of moves to fill in the inner (n,n) square
-    #Essentially builds an MST, then pushes atoms to the bottom until it's full
+def create_moves(atoms, fill, bounds):
+    """Takes an array of atom positions and a copy modified by fill_in, and generates
+    a set of moves to fill in the remaining target area.
+    
+    Parameters
+    ----------
+    atoms : numpy array
+        An array with 1s in filled sites and 0s in empty sites
+    fill : numpy array
+        An array of just the target area with 1s in filled sites and 0s in empty sites
+    bounds : list
+        describes the rectangle of the target region
+
+    Returns
+    -------
+    moves : list
+        A list describing every move needed to fill in the remainder of the array"""
+    #Essentially builds a Minimum Spanning Tree, then pushes atoms to the bottom until it's full
     #Complexity O(n^3)
     #Total path length will be O(n^3), so that's the lower bound
-    
+
+    #This will map each point to a list of lists    
+    #first list is the connected point, second is the root point
+    #Third is number of points under this one, only needed for the root point
     sites = {}
     
     #find zeros on the periimeter
@@ -218,13 +326,11 @@ def create_moves(atoms, fill, bounds, exact = False):
     perimeter = {}
     
     #We perform a breadth first search to reach every site in the shortest distance
-    #Add unsearched sites to a queue
+    #Add unsearched sites to the queue
     q = []
     ind = 0
     for site in np.argwhere(perim == 0):
         site = tuple(site)
-        #first list is the connected nodes, second is the root node
-        #Third is number of nodes under this one, only needed for the root node
         sites[site] = [[],site]
         q.append(site)
         site = (site[0] + y1, site[1] + x1)
@@ -312,24 +418,54 @@ def create_moves(atoms, fill, bounds, exact = False):
     return moves
 
 def rearrange(sites,bounds,pad = True):
+    """Given an initial array of atoms, performs the full rearranging
+
+    Parameters
+    ----------
+    sites : numpy array
+        An array with 1s in filled sites and 0s in empty sites
+    bounds : list
+        describes the rectangle of the target region
+    pad : bool
+        Whether to pad the array or not, is passed to fill_in
+
+    Returns
+    -------
+    moves : list
+        A list describing every move needed to fill in the remainder of the array
+    """
     #Input a binary array representing the initial loading
     #and a bounding box for target site locations
     x1,y1,x2,y2 = bounds
     targets = sites[y1:y2,x1:x2]
     fill = fill_in(targets)
-    moves = create_moves(sites,fill,bounds, exact = False)
+    moves = create_moves(sites,fill,bounds)
     return moves
 
-def random_run(n, N, bounds ,seed , animate = False):
-    #Create a random lattice loading and rearrange it
+def random_run(N, bounds , seed , animate = False):
+    """Creates a random lattice loading and rearranges it
+
+    Parameters
+    ----------
+    N : int
+        Width of the lattice to generate
+    bounds : list
+        describes the rectangle of the target region
+    seed : int
+        The random seed to use, to allow for reproducibility
+    animate : bool
+        Whether to generate an animation or not
+
+    Returns
+    -------
+    moves : list
+        A list describing every move needed to fill in the remainder of the array"""
+    
     np.random.seed(seed)
     arr = np.random.randint(0,2,(N,N))
     copy = arr.copy()
     moves = rearrange(arr,bounds)
     
-    #Number of moves needed is equal to the number of 1s in the central n*n square
-    #We calculate this by calculating the number of 0s and subtract from n**2
-
     if animate:
         frames = []
         fig = plt.figure()
@@ -378,6 +514,10 @@ def random_run(n, N, bounds ,seed , animate = False):
     return moves
     
 def average(n,reps, anim = False):
+    """Used for doing repeated runs to generate statistics."""
+    #For now, a square target array of width n is used, and N is calculated
+    #such that there are enough spare atoms to do the rearranging
+    #Later, more general target shapes will be allowed
     vals = []
     times = []
     paths = []
@@ -387,7 +527,7 @@ def average(n,reps, anim = False):
     for rep in range(0,reps):
         t = time.time()
 
-        moves = random_run(n,N,bounds,rep,anim)
+        moves = random_run(N,bounds,rep,anim)
         #Moves needed to rearrange 
         vals.append(len(moves)/n**2)
 
@@ -397,7 +537,7 @@ def average(n,reps, anim = False):
     return vals, paths, times
 
 def graphs():
-
+    """Uses the average function to generate graphs"""
     num = np.array([15,25,50,100,200,300])
     reps = np.array([1000,500,100,20,5,3])
 
